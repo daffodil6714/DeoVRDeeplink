@@ -13,7 +13,7 @@ BUILD_DIR := $(PROJECT_NAME)/bin/$(BUILD_CONFIG)/$(FRAMEWORK)
 MANIFEST_FILE := manifest.json
 
 # Get current version from .csproj
-CURRENT_VERSION := $(shell powershell -Command "(Select-Xml -Path '$(PROJECT_FILE)' -XPath '//AssemblyVersion').Node.InnerText")
+CURRENT_VERSION := $(shell grep -oP '(?<=<AssemblyVersion>)[^<]+' $(PROJECT_FILE))
 VERSION_PARTS := $(subst ., ,$(CURRENT_VERSION))
 MAJOR := $(word 1,$(VERSION_PARTS))
 MINOR := $(word 2,$(VERSION_PARTS))
@@ -58,98 +58,86 @@ clean:
 
 rebuild: clean build
 
-# ZIP and checksum generation
+# ZIP and checksum generation (PowerShell only for this)
 $(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip: build
 	@echo "Creating release package..."
-	@powershell -Command " \
-		$$path = '$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip'; \
-		if (Test-Path $$path) { Remove-Item $$path }; \
-		Compress-Archive -Path '$(BUILD_DIR)/*' -DestinationPath $$path -Force; \
-		Write-Host '✓ Package created: $$path'"
+	@powershell -Command "Compress-Archive -Path '$(BUILD_DIR)/*' -DestinationPath '$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip' -Force; Write-Host '✓ Package created'"
 
 get-checksum: $(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip
-	@powershell -Command " \
-		$$file = '$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip'; \
-		$$hash = (Get-FileHash -Path $$file -Algorithm MD5).Hash; \
-		Write-Host $$hash"
+	@powershell -Command "$$hash = (Get-FileHash -Path '$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip' -Algorithm MD5).Hash; Write-Host $$hash"
 
 # Manifest update
 update-manifest: get-checksum
 	@echo "Updating manifest.json with version $(CURRENT_VERSION)..."
-	@powershell -Command " \
-		$$manifest = Get-Content '$(MANIFEST_FILE)' | ConvertFrom-Json; \
-		$$hash = ((Get-FileHash -Path '$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip' -Algorithm MD5).Hash); \
-		$$newVersion = @{ \
-			version = '$(CURRENT_VERSION)'; \
-			changelog = 'Release $(CURRENT_VERSION)'; \
-			targetAbi = '10.11.6.0'; \
-			sourceUrl = 'https://github.com/$(GITHUB_REPO)/releases/download/v$(CURRENT_VERSION)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip'; \
-			checksum = $$hash; \
-			timestamp = (Get-Date -AsUTC -Format 'yyyy-MM-ddTHH:mm:ssZ') \
-		}; \
-		$$manifest[0].versions += $$newVersion; \
-		$$manifest | ConvertTo-Json -Depth 10 | Set-Content '$(MANIFEST_FILE)'; \
-		Write-Host '✓ Manifest updated'"
+	@bash -c ' \
+		CHECKSUM=$$(powershell -Command "(Get-FileHash -Path '"'"'$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip'"'"' -Algorithm MD5).Hash"); \
+		TIMESTAMP=$$(date -u +"%Y-%m-%dT%H:%M:%SZ"); \
+		node -e " \
+			const fs = require('"'"'fs'"'"'); \
+			const manifest = JSON.parse(fs.readFileSync('"'"'$(MANIFEST_FILE)'"'"')); \
+			const newVersion = { \
+				version: '"'"'$(CURRENT_VERSION)'"'"', \
+				changelog: '"'"'Release $(CURRENT_VERSION)'"'"', \
+				targetAbi: '"'"'10.11.6.0'"'"', \
+				sourceUrl: '"'"'https://github.com/$(GITHUB_REPO)/releases/download/v$(CURRENT_VERSION)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip'"'"', \
+				checksum: '"'"'$$CHECKSUM'"'"', \
+				timestamp: '"'"'$$TIMESTAMP'"'"' \
+			}; \
+			manifest[0].versions.push(newVersion); \
+			fs.writeFileSync('"'"'$(MANIFEST_FILE)'"'"', JSON.stringify(manifest, null, 4)); \
+			console.log('"'"'✓ Manifest updated'"'"'); \
+		" \
+	'
 
 # Git tagging
 tag:
 	@echo "Creating git tag v$(CURRENT_VERSION)..."
-	git tag -a v$(CURRENT_VERSION) -m "Release $(CURRENT_VERSION)" || echo "Tag already exists"
+	@git tag -a v$(CURRENT_VERSION) -m "Release $(CURRENT_VERSION)" 2>/dev/null || echo "Tag already exists"
 	@echo "✓ Tag created/verified"
 
 # GitHub release creation
 create-release: $(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip tag
 	@echo "Creating GitHub release..."
-	@powershell -Command " \
-		$$assetPath = '$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip'; \
-		if (Get-Command gh -ErrorAction SilentlyContinue) { \
-			gh release create v$(CURRENT_VERSION) --title 'v$(CURRENT_VERSION)' --notes 'Release $(CURRENT_VERSION)' $$assetPath || echo 'Release already exists'; \
-			Write-Host '✓ GitHub release created' \
-		} else { \
-			Write-Host '⚠ GitHub CLI (gh) not found. Skipping release creation.'; \
-			Write-Host '  Upload manually: gh release create v$(CURRENT_VERSION) --title ''v$(CURRENT_VERSION)'' $$assetPath' \
-		}"
+	@if command -v gh &> /dev/null; then \
+		gh release create v$(CURRENT_VERSION) --title "v$(CURRENT_VERSION)" --notes "Release $(CURRENT_VERSION)" "$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip" 2>/dev/null || echo "Release already exists"; \
+		echo "✓ GitHub release created"; \
+	else \
+		echo "⚠ GitHub CLI (gh) not found. Skipping release creation."; \
+		echo "  Upload manually: gh release create v$(CURRENT_VERSION) --title 'v$(CURRENT_VERSION)' '$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip'"; \
+	fi
 
-# Version bumping functions
+# Version bumping functions (Bash)
 bump-major:
-	@echo "Bumping major version: $(MAJOR).$(MINOR).$(PATCH).$(REVISION) -> $$(( $(MAJOR) + 1 )).0.0.0"
-	@powershell -Command " \
-		$$newMajor = $$(( $(MAJOR) + 1 )); \
-		$$newVersion = '$$newMajor.0.0.0'; \
-		$$xml = [xml](Get-Content '$(PROJECT_FILE)'); \
-		$$xml.SelectSingleNode('//AssemblyVersion').InnerText = $$newVersion; \
-		$$xml.Save('$(PROJECT_FILE)'); \
-		Write-Host '✓ Version updated to $$newVersion'"
+	@echo "Bumping major version: $(MAJOR).$(MINOR).$(PATCH).$(REVISION) -> $$(($(MAJOR) + 1)).0.0.0"
+	@bash -c ' \
+		NEW_VERSION="$$(($(MAJOR) + 1)).0.0.0"; \
+		sed -i.bak "s/<AssemblyVersion>[^<]*<\/AssemblyVersion>/<AssemblyVersion>$$NEW_VERSION<\/AssemblyVersion>/" "$(PROJECT_FILE)"; \
+		rm -f "$(PROJECT_FILE).bak"; \
+		echo "✓ Version updated to $$NEW_VERSION"'
 
 bump-minor:
-	@echo "Bumping minor version: $(MAJOR).$(MINOR).$(PATCH).$(REVISION) -> $(MAJOR).$$(( $(MINOR) + 1 )).0.0"
-	@powershell -Command " \
-		$$newMinor = $$(( $(MINOR) + 1 )); \
-		$$newVersion = '$(MAJOR).$$newMinor.0.0'; \
-		$$xml = [xml](Get-Content '$(PROJECT_FILE)'); \
-		$$xml.SelectSingleNode('//AssemblyVersion').InnerText = $$newVersion; \
-		$$xml.Save('$(PROJECT_FILE)'); \
-		Write-Host '✓ Version updated to $$newVersion'"
+	@echo "Bumping minor version: $(MAJOR).$(MINOR).$(PATCH).$(REVISION) -> $(MAJOR).$$(($(MINOR) + 1)).0.0"
+	@bash -c ' \
+		NEW_VERSION="$(MAJOR).$$(($(MINOR) + 1)).0.0"; \
+		sed -i.bak "s/<AssemblyVersion>[^<]*<\/AssemblyVersion>/<AssemblyVersion>$$NEW_VERSION<\/AssemblyVersion>/" "$(PROJECT_FILE)"; \
+		rm -f "$(PROJECT_FILE).bak"; \
+		echo "✓ Version updated to $$NEW_VERSION"'
 
 bump-patch:
-	@echo "Bumping patch version: $(MAJOR).$(MINOR).$(PATCH).$(REVISION) -> $(MAJOR).$(MINOR).$$(( $(PATCH) + 1 )).0"
-	@powershell -Command " \
-		$$newPatch = $$(( $(PATCH) + 1 )); \
-		$$newVersion = '$(MAJOR).$(MINOR).$$newPatch.0'; \
-		$$xml = [xml](Get-Content '$(PROJECT_FILE)'); \
-		$$xml.SelectSingleNode('//AssemblyVersion').InnerText = $$newVersion; \
-		$$xml.Save('$(PROJECT_FILE)'); \
-		Write-Host '✓ Version updated to $$newVersion'"
+	@echo "Bumping patch version: $(MAJOR).$(MINOR).$(PATCH).$(REVISION) -> $(MAJOR).$(MINOR).$$(($(PATCH) + 1)).0"
+	@bash -c ' \
+		NEW_VERSION="$(MAJOR).$(MINOR).$$(($(PATCH) + 1)).0"; \
+		sed -i.bak "s/<AssemblyVersion>[^<]*<\/AssemblyVersion>/<AssemblyVersion>$$NEW_VERSION<\/AssemblyVersion>/" "$(PROJECT_FILE)"; \
+		rm -f "$(PROJECT_FILE).bak"; \
+		echo "✓ Version updated to $$NEW_VERSION"'
 
 bump-revision:
-	@echo "Bumping revision version: $(MAJOR).$(MINOR).$(PATCH).$(REVISION) -> $(MAJOR).$(MINOR).$(PATCH).$$(( $(REVISION) + 1 ))"
-	@powershell -Command " \
-		$$newRevision = $$(( $(REVISION) + 1 )); \
-		$$newVersion = '$(MAJOR).$(MINOR).$(PATCH).$$newRevision'; \
-		$$xml = [xml](Get-Content '$(PROJECT_FILE)'); \
-		$$xml.SelectSingleNode('//AssemblyVersion').InnerText = $$newVersion; \
-		$$xml.Save('$(PROJECT_FILE)'); \
-		Write-Host '✓ Version updated to $$newVersion'"
+	@echo "Bumping revision version: $(MAJOR).$(MINOR).$(PATCH).$(REVISION) -> $(MAJOR).$(MINOR).$(PATCH).$$(($(REVISION) + 1))"
+	@bash -c ' \
+		NEW_VERSION="$(MAJOR).$(MINOR).$(PATCH).$$(($(REVISION) + 1))"; \
+		sed -i.bak "s/<AssemblyVersion>[^<]*<\/AssemblyVersion>/<AssemblyVersion>$$NEW_VERSION<\/AssemblyVersion>/" "$(PROJECT_FILE)"; \
+		rm -f "$(PROJECT_FILE).bak"; \
+		echo "✓ Version updated to $$NEW_VERSION"'
 
 # Full release workflows
 major-release: bump-major rebuild $(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip update-manifest
