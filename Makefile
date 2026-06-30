@@ -13,17 +13,17 @@ BUILD_DIR := $(PROJECT_NAME)/bin/$(BUILD_CONFIG)/$(FRAMEWORK)
 MANIFEST_FILE := manifest.json
 
 # Get current version from .csproj
-CURRENT_VERSION := $(shell grep -oP '(?<=<AssemblyVersion>)[^<]+' $(PROJECT_FILE))
-VERSION_PARTS := $(subst ., ,$(CURRENT_VERSION))
-MAJOR := $(word 1,$(VERSION_PARTS))
-MINOR := $(word 2,$(VERSION_PARTS))
-PATCH := $(word 3,$(VERSION_PARTS))
-REVISION := $(word 4,$(VERSION_PARTS))
+# Use = (recursive expansion) so the shell command re-runs on every reference,
+# picking up changes made by bump-* targets within the same make invocation.
+CURRENT_VERSION = $(shell grep -oP '(?<=<AssemblyVersion>)[^<]+' $(PROJECT_FILE))
+VERSION_PARTS = $(subst ., ,$(CURRENT_VERSION))
+MAJOR = $(word 1,$(VERSION_PARTS))
+MINOR = $(word 2,$(VERSION_PARTS))
+PATCH = $(word 3,$(VERSION_PARTS))
+REVISION = $(word 4,$(VERSION_PARTS))
 
-# GitHub settings
-REPO_OWNER := daffodil6714
-REPO_NAME := DeoVRDeeplink
-GITHUB_REPO := $(REPO_OWNER)/$(REPO_NAME)
+# GitHub settings — derived from git remote (supports both HTTPS and SSH URLs)
+GITHUB_REPO := $(shell git remote get-url origin 2>/dev/null | sed 's|.*github\.com[:/]\(.*\)\.git$$|\1|;s|.*github\.com[:/]\(.*\)|\1|')
 
 help:
 	@echo "$(PROJECT_NAME) Release Management"
@@ -49,28 +49,25 @@ help:
 build:
 	@echo "Building $(PROJECT_NAME) ($(CURRENT_VERSION))..."
 	dotnet build -c $(BUILD_CONFIG) $(SOLUTION_FILE)
-	@echo "✓ Build complete"
+	@echo "[OK] Build complete"
 
 clean:
 	@echo "Cleaning build artifacts..."
 	dotnet clean -c $(BUILD_CONFIG) $(SOLUTION_FILE)
-	@echo "✓ Clean complete"
+	@echo "[OK] Clean complete"
 
 rebuild: clean build
 
 # ZIP and checksum generation (PowerShell only for this)
-$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip: build
+$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip: rebuild
 	@echo "Creating release package..."
-	@powershell -Command "Compress-Archive -Path '$(BUILD_DIR)/*' -DestinationPath '$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip' -Force; Write-Host '✓ Package created'"
-
-get-checksum: $(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip
-	@powershell -Command "$$hash = (Get-FileHash -Path '$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip' -Algorithm MD5).Hash; Write-Host $$hash"
+	@powershell -Command "Compress-Archive -Path '$(BUILD_DIR)/*' -DestinationPath '$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip' -Force; Write-Host '[OK] Package created'"
 
 # Manifest update
-update-manifest: get-checksum
+update-manifest: $(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip
 	@echo "Updating manifest.json with version $(CURRENT_VERSION)..."
 	@bash -c ' \
-		CHECKSUM=$$(powershell -Command "(Get-FileHash -Path '"'"'$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip'"'"' -Algorithm MD5).Hash"); \
+		CHECKSUM=$$(md5sum "$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip" | cut -d" " -f1); \
 		TIMESTAMP=$$(date -u +"%Y-%m-%dT%H:%M:%SZ"); \
 		node -e " \
 			const fs = require('"'"'fs'"'"'); \
@@ -85,24 +82,25 @@ update-manifest: get-checksum
 			}; \
 			manifest[0].versions.push(newVersion); \
 			fs.writeFileSync('"'"'$(MANIFEST_FILE)'"'"', JSON.stringify(manifest, null, 4)); \
-			console.log('"'"'✓ Manifest updated'"'"'); \
+			console.log('"'"'[OK] Manifest updated'"'"'); \
 		" \
 	'
 
 # Git tagging
 tag:
 	@echo "Creating git tag v$(CURRENT_VERSION)..."
-	@git tag -a v$(CURRENT_VERSION) -m "Release $(CURRENT_VERSION)" 2>/dev/null || echo "Tag already exists"
-	@echo "✓ Tag created/verified"
+	@git tag -d v$(CURRENT_VERSION) 2>/dev/null || true
+	@git tag -a v$(CURRENT_VERSION) -m "Release $(CURRENT_VERSION)"
+	@echo "[OK] Tag created"
 
 # GitHub release creation
-create-release: $(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip tag
+create-release: tag
 	@echo "Creating GitHub release..."
 	@if command -v gh &> /dev/null; then \
-		gh release create v$(CURRENT_VERSION) --title "v$(CURRENT_VERSION)" --notes "Release $(CURRENT_VERSION)" "$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip" 2>/dev/null || echo "Release already exists"; \
-		echo "✓ GitHub release created"; \
+		gh release create v$(CURRENT_VERSION) --repo $(GITHUB_REPO) --title "v$(CURRENT_VERSION)" --notes "Release $(CURRENT_VERSION)" "$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip"; \
+		echo "[OK] GitHub release created"; \
 	else \
-		echo "⚠ GitHub CLI (gh) not found. Skipping release creation."; \
+		echo "gh CLI not found. Skipping release creation."; \
 		echo "  Upload manually: gh release create v$(CURRENT_VERSION) --title 'v$(CURRENT_VERSION)' '$(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip'"; \
 	fi
 
@@ -113,7 +111,7 @@ bump-major:
 		NEW_VERSION="$$(($(MAJOR) + 1)).0.0.0"; \
 		sed -i.bak "s/<AssemblyVersion>[^<]*<\/AssemblyVersion>/<AssemblyVersion>$$NEW_VERSION<\/AssemblyVersion>/" "$(PROJECT_FILE)"; \
 		rm -f "$(PROJECT_FILE).bak"; \
-		echo "✓ Version updated to $$NEW_VERSION"'
+		echo "[OK] Version updated to $$NEW_VERSION"'
 
 bump-minor:
 	@echo "Bumping minor version: $(MAJOR).$(MINOR).$(PATCH).$(REVISION) -> $(MAJOR).$$(($(MINOR) + 1)).0.0"
@@ -121,7 +119,7 @@ bump-minor:
 		NEW_VERSION="$(MAJOR).$$(($(MINOR) + 1)).0.0"; \
 		sed -i.bak "s/<AssemblyVersion>[^<]*<\/AssemblyVersion>/<AssemblyVersion>$$NEW_VERSION<\/AssemblyVersion>/" "$(PROJECT_FILE)"; \
 		rm -f "$(PROJECT_FILE).bak"; \
-		echo "✓ Version updated to $$NEW_VERSION"'
+		echo "[OK] Version updated to $$NEW_VERSION"'
 
 bump-patch:
 	@echo "Bumping patch version: $(MAJOR).$(MINOR).$(PATCH).$(REVISION) -> $(MAJOR).$(MINOR).$$(($(PATCH) + 1)).0"
@@ -129,7 +127,7 @@ bump-patch:
 		NEW_VERSION="$(MAJOR).$(MINOR).$$(($(PATCH) + 1)).0"; \
 		sed -i.bak "s/<AssemblyVersion>[^<]*<\/AssemblyVersion>/<AssemblyVersion>$$NEW_VERSION<\/AssemblyVersion>/" "$(PROJECT_FILE)"; \
 		rm -f "$(PROJECT_FILE).bak"; \
-		echo "✓ Version updated to $$NEW_VERSION"'
+		echo "[OK] Version updated to $$NEW_VERSION"'
 
 bump-revision:
 	@echo "Bumping revision version: $(MAJOR).$(MINOR).$(PATCH).$(REVISION) -> $(MAJOR).$(MINOR).$(PATCH).$$(($(REVISION) + 1))"
@@ -137,29 +135,29 @@ bump-revision:
 		NEW_VERSION="$(MAJOR).$(MINOR).$(PATCH).$$(($(REVISION) + 1))"; \
 		sed -i.bak "s/<AssemblyVersion>[^<]*<\/AssemblyVersion>/<AssemblyVersion>$$NEW_VERSION<\/AssemblyVersion>/" "$(PROJECT_FILE)"; \
 		rm -f "$(PROJECT_FILE).bak"; \
-		echo "✓ Version updated to $$NEW_VERSION"'
+		echo "[OK] Version updated to $$NEW_VERSION"'
 
 # Full release workflows
-major-release: bump-major rebuild $(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip update-manifest
+major-release: bump-major $(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip update-manifest
 	@git add $(PROJECT_FILE) $(MANIFEST_FILE)
 	@git commit -m "chore: bump major version to $(CURRENT_VERSION)"
 	@$(MAKE) create-release
-	@echo "✓ Major release complete: v$(CURRENT_VERSION)"
+	@echo "[OK] Major release complete: v$(CURRENT_VERSION)"
 
-minor-release: bump-minor rebuild $(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip update-manifest
+minor-release: bump-minor $(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip update-manifest
 	@git add $(PROJECT_FILE) $(MANIFEST_FILE)
 	@git commit -m "chore: bump minor version to $(CURRENT_VERSION)"
 	@$(MAKE) create-release
-	@echo "✓ Minor release complete: v$(CURRENT_VERSION)"
+	@echo "[OK] Minor release complete: v$(CURRENT_VERSION)"
 
-patch-release: bump-patch rebuild $(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip update-manifest
+patch-release: bump-patch $(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip update-manifest
 	@git add $(PROJECT_FILE) $(MANIFEST_FILE)
 	@git commit -m "chore: bump patch version to $(CURRENT_VERSION)"
 	@$(MAKE) create-release
-	@echo "✓ Patch release complete: v$(CURRENT_VERSION)"
+	@echo "[OK] Patch release complete: v$(CURRENT_VERSION)"
 
-revision-release: bump-revision rebuild $(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip update-manifest
+revision-release: bump-revision $(BUILD_DIR)/$(PROJECT_NAME)-v$(CURRENT_VERSION).zip update-manifest
 	@git add $(PROJECT_FILE) $(MANIFEST_FILE)
 	@git commit -m "chore: bump revision version to $(CURRENT_VERSION)"
 	@$(MAKE) create-release
-	@echo "✓ Revision release complete: v$(CURRENT_VERSION)"
+	@echo "[OK] Revision release complete: v$(CURRENT_VERSION)"

@@ -9,13 +9,16 @@ using Microsoft.Extensions.Logging;
 
 namespace DeoVRDeeplink.Utilities;
 
+/// <summary>
+///     Utility class for building DeoVR responses for actors and videos.
+/// </summary>
 public static class DeoVrResponseBuilder
 {
     /// <summary>
-    /// Builds a DeoVR response for an actor/person showing all their videos
+    ///     Builds a DeoVR response for an actor/person showing all their videos
     /// </summary>
     public static DeoVrScenesResponse BuildActorResponse(
-        Person person, 
+        Person person,
         string baseUrl,
         ILibraryManager libraryManager,
         ILogger logger)
@@ -25,7 +28,7 @@ public static class DeoVrResponseBuilder
             PersonIds = [person.Id],
             IncludeItemTypes = [BaseItemKind.Movie],
             Recursive = true,
-            IsFolder = false
+            IsFolder = false,
         };
 
         var response = new DeoVrScenesResponse();
@@ -37,28 +40,28 @@ public static class DeoVrResponseBuilder
                 Title = video.Name,
                 VideoLength = (int)((video.RunTimeTicks ?? 0) / TimeSpan.TicksPerSecond),
                 VideoUrl = $"{baseUrl}/deovr/json/{video.Id}/response.json",
-                ThumbnailUrl = ImageHelper.GetImageUrl(video, baseUrl)
+                ThumbnailUrl = ImageHelper.GetImageUrl(video, baseUrl),
             }).ToList();
 
         var scene = new DeoVrScene
         {
             Name = person.Name,
-            List = videoList
+            List = videoList,
         };
 
         response.Scenes.Add(scene);
         logger.LogInformation("Added {Count} videos from library: {Person}",
             videoList.Count, person.Name);
-        
+
         return response;
     }
 
     /// <summary>
-    /// Builds a DeoVR response for a video with all metadata and encodings
+    ///     Builds a DeoVR response for a video with all metadata and encodings
     /// </summary>
     public static DeoVrVideoResponse BuildVideoResponse(
-        Video video, 
-        string baseUrl, 
+        Video video,
+        string baseUrl,
         LibraryConfiguration? libConfig,
         IChapterRepository chapterRepository,
         ILogger logger)
@@ -67,11 +70,11 @@ public static class DeoVrResponseBuilder
         var proxySecret = DeoVrDeeplinkPlugin.ProxySecret;
         var expiry = DateTimeOffset.UtcNow.AddSeconds(runtimeSeconds * 2).ToUnixTimeSeconds();
 
-        var fallbackStereo = libConfig?.FallbackStereoMode ?? StereoMode.None;
-        var fallbackProjection = libConfig?.FallbackProjection ?? ProjectionType.None;
+        // var fallbackStereo = libConfig?.FallbackStereoMode ?? StereoMode.None;
+        // var fallbackProjection = libConfig?.FallbackProjection ?? ProjectionType.None;
 
         var thumbnailUrl = ImageHelper.GetImageUrl(video, baseUrl);
-        var (stereoMode, screenType) = Get3DType(video, fallbackStereo, fallbackProjection);
+        // var (stereoMode, screenType) = Get3DType(video, fallbackStereo, fallbackProjection);
 
         var encodings = video.GetMediaSources(false)
             .GroupBy(ms => ms.VideoStream.Codec ?? "unknown")
@@ -81,8 +84,8 @@ public static class DeoVrResponseBuilder
                 VideoSources = g.Select(ms => new DeoVrVideoSource
                 {
                     Resolution = ms.VideoStream?.Height ?? 2160,
-                    Url = $"{baseUrl}/deovr/proxy/{video.Id}/{ms.Id}/{expiry}/{SignatureValidator.GenerateSignature(video.Id, ms.Id, expiry, proxySecret)}/stream.mp4"
-                }).ToList()
+                    Url = $"{baseUrl}/deovr/proxy/{video.Id}/{ms.Id}/{expiry}/{SignatureValidator.GenerateSignature(video.Id, ms.Id, expiry, proxySecret)}/stream.mp4",
+                }).ToList(),
             }).ToList();
 
         var response = new DeoVrVideoResponse
@@ -91,40 +94,57 @@ public static class DeoVrResponseBuilder
             Title = video.Name ?? "Unknown",
             Is3D = true,
             VideoLength = runtimeSeconds,
-            ScreenType = screenType,
-            StereoMode = stereoMode,
-            ThumbnailUrl = thumbnailUrl!,
+            // ScreenType = screenType,
+            // StereoMode = stereoMode,
+            ThumbnailUrl = thumbnailUrl,
             TimelinePreview = $"{baseUrl}/deovr/timeline/{video.Id}/4096_timelinePreview341x195.jpg",
             Encodings = encodings,
-            Timestamps = GetDeoVrTimestamps(video, chapterRepository, logger)
+            Timestamps = GetDeoVrTimestamps(video, chapterRepository, logger),
         };
 
         return response;
     }
 
     /// <summary>
-    /// Determines VR stereo mode and screen type based on video format and fallbacks
+    ///     Determines VR stereo mode and screen type based on video format and fallbacks
     /// </summary>
     private static (string StereoMode, string ScreenType) Get3DType(Video video, StereoMode fallbackStereo,
         ProjectionType fallbackProjection)
     {
         var fileName = video.FileNameWithoutExtension.ToUpper();
         if (fileName.EndsWith("LR_180"))
+        {
             return ("sbs", "dome");
-        else if (fileName.EndsWith("LR_360"))
-            return ("sbs", "sphere"); // I have never encountered this kind of movie.
-        else if (fileName.EndsWith("TB_180"))
-            return ("tb", "dome"); // I have never encountered this kind of movie.
-        else if (fileName.EndsWith("TB_360"))
-            return ("tb", "sphere"); // I have never encountered this kind of movie.
-        else if (fileName.EndsWith("FISHEYE180"))
-            return ("sbs", "fisheye"); // I have never encountered this kind of movie.
-        else if (fileName.EndsWith("FISHEYE190"))
-            return ("sbs", "fisheye"); // return ("cuv", "rf52") not work
-        else if (fileName.EndsWith("FISHEYE200"))
-            return ("sbs", "mkx200"); // I have never encountered this kind of movie.
+        }
+
+        if (fileName.EndsWith("LR_360"))
+        {
+            return ("sbs", "sphere");
+        }
+
+        if (fileName.EndsWith("TB_180"))
+        {
+            return ("tb", "dome");
+        }
+
+        if (fileName.EndsWith("TB_360"))
+        {
+            return ("tb", "sphere");
+        }
+
+        if (fileName.EndsWith("FISHEYE180") || fileName.EndsWith("FISHEYE190"))
+        {
+            return ("sbs", "fisheye");
+        }
+
+        if (fileName.EndsWith("FISHEYE200") || fileName.EndsWith("MKX200"))
+        {
+            return ("sbs", "mkx200");
+        }
+
         return video.Video3DFormat switch
-        {   // flat worked
+        {
+            // flat worked
             Video3DFormat.FullSideBySide => ("sbs", "flat"),
             Video3DFormat.FullTopAndBottom => ("tb", "flat"),
             Video3DFormat.HalfSideBySide => ("sbs", "flat"),
@@ -134,20 +154,20 @@ public static class DeoVrResponseBuilder
                 {
                     StereoMode.SideBySide => "sbs",
                     StereoMode.TopBottom => "tb",
-                    _ => "off"
+                    _ => "off",
                 },
                 fallbackProjection switch
                 {
                     ProjectionType.Projection180 => "dome",
                     ProjectionType.Projection360 => "sphere",
-                    _ => "flat"
+                    _ => "flat",
                 }
-            )
+            ),
         };
     }
 
     /// <summary>
-    /// Retrieves chapter timestamps, in seconds, for the item
+    ///     Retrieves chapter timestamps, in seconds, for the item
     /// </summary>
     private static List<DeoVrTimestamps> GetDeoVrTimestamps(
         BaseItem item,
@@ -163,11 +183,11 @@ public static class DeoVrResponseBuilder
                     .Select(ch => new DeoVrTimestamps
                     {
                         ts = (int)(ch.StartPositionTicks / TimeSpan.TicksPerSecond),
-                        name = ch.Name ?? "Untitled Chapter"
+                        name = ch.Name ?? "Untitled Chapter",
                     })
                     .ToList();
             }
-            
+
             logger.LogDebug("No chapters found for item {ItemName}", item.Name);
             return [];
         }
