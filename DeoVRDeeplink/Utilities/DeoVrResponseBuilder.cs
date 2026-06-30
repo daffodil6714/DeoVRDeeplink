@@ -105,17 +105,30 @@ public static class DeoVrResponseBuilder
     /// <summary>
     /// Determines VR stereo mode and screen type based on video format and fallbacks
     /// </summary>
-    private static (string StereoMode, string ScreenType) Get3DType(
-        Video video, 
-        StereoMode fallbackStereo,
+    private static (string StereoMode, string ScreenType) Get3DType(Video video, StereoMode fallbackStereo,
         ProjectionType fallbackProjection)
     {
+        var fileName = video.FileNameWithoutExtension.ToUpper();
+        if (fileName.EndsWith("LR_180"))
+            return ("sbs", "dome");
+        else if (fileName.EndsWith("LR_360"))
+            return ("sbs", "sphere"); // I have never encountered this kind of movie.
+        else if (fileName.EndsWith("TB_180"))
+            return ("tb", "dome"); // I have never encountered this kind of movie.
+        else if (fileName.EndsWith("TB_360"))
+            return ("tb", "sphere"); // I have never encountered this kind of movie.
+        else if (fileName.EndsWith("FISHEYE180"))
+            return ("sbs", "fisheye"); // I have never encountered this kind of movie.
+        else if (fileName.EndsWith("FISHEYE190"))
+            return ("sbs", "fisheye"); // return ("cuv", "rf52") not work
+        else if (fileName.EndsWith("FISHEYE200"))
+            return ("sbs", "mkx200"); // I have never encountered this kind of movie.
         return video.Video3DFormat switch
-        {
-            Video3DFormat.FullSideBySide => ("sbs", "sphere"),
-            Video3DFormat.FullTopAndBottom => ("tb", "sphere"),
-            Video3DFormat.HalfSideBySide => ("sbs", "dome"),
-            Video3DFormat.HalfTopAndBottom => ("tb", "dome"),
+        {   // flat worked
+            Video3DFormat.FullSideBySide => ("sbs", "flat"),
+            Video3DFormat.FullTopAndBottom => ("tb", "flat"),
+            Video3DFormat.HalfSideBySide => ("sbs", "flat"),
+            Video3DFormat.HalfTopAndBottom => ("tb", "flat"),
             _ => (
                 fallbackStereo switch
                 {
