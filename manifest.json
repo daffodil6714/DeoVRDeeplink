@@ -134,6 +134,15 @@
               "sourceUrl": "https://github.com/Toastyice/DeoVRDeeplink/releases/download/v3.0.1.0/DeoVRDeeplink-v3.0.1.0.zip",
               "checksum": "16c55940512fdbcce773db751e9e7bfd",
               "timestamp": "2025-11-11T06:46:00Z"
+            },
+            
+            {
+                "version": "3.1.0.0",
+                "changelog": "Custom build with improved format detection handling",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/daffodil6714/DeoVRDeeplink/releases/download/v3.1.0.0/DeoVRDeeplink-v3.1.0.0.zip",
+                "checksum": "4973a476423a7dad607965651e8acc47",
+                "timestamp": "2026-06-29T12:07:00Z"
             }
         ]
     }
